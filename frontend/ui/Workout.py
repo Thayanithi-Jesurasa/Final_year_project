@@ -6,18 +6,19 @@ Professional UI with glassmorphism effects and high-quality layout
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QFrame, QGridLayout, QMessageBox, QSizePolicy, QScrollArea
+    QPushButton, QFrame, QGridLayout, QMessageBox,
+    QSizePolicy, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from backend.models.data_manager import (
     get_trainee_info,
-    get_workout_plan,
-    save_workout_session,
-    WORKOUT_COLUMNS
+    get_workout_plan
 )
-from backend.utils.activity_tracker import update_last_activity
+from backend.models.data_manager import plan_level_and_index
+
+from backend.utils.unity_session_server import start_new_session
 
 
 class Workout(QWidget):
@@ -39,7 +40,6 @@ class Workout(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ---------------- NAV BAR ----------------
         nav_bar = QFrame()
         nav_bar.setFixedHeight(80)
         nav_bar.setStyleSheet("""
@@ -83,7 +83,6 @@ class Workout(QWidget):
         profile_btn.setStyleSheet(btn_style % ("transparent", "1px solid rgba(255,255,255,0.4)"))
         profile_btn.clicked.connect(self.on_profile_clicked)
 
-        
         nav_layout.addWidget(analytics_btn)
         nav_layout.addSpacing(10)
         nav_layout.addWidget(dash_btn)
@@ -92,23 +91,19 @@ class Workout(QWidget):
 
         main_layout.addWidget(nav_bar)
 
-        # ---------------- Scrollable page (Responsive) ----------------
+        # Responsive scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.setStyleSheet("background: transparent; border: none;")
 
-        page = QWidget()
-        page.setStyleSheet("background: transparent;")
-        page_layout = QVBoxLayout(page)
-        page_layout.setContentsMargins(0, 0, 0, 0)
-        page_layout.setSpacing(0)
+        self.content_wrapper = QWidget()
+        self.content_wrapper.setStyleSheet("background: transparent;")
+        self.content_layout = QVBoxLayout(self.content_wrapper)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(0)
 
-        scroll.setWidget(page)
-        main_layout.addWidget(scroll, 1)
-
-        # ---------------- TOP ROW: TRAINEE INFO + LOGOUT ----------------
+        # Top row moved INSIDE scroll area
         top_row_container = QWidget()
         top_row_container.setStyleSheet("background: transparent; border: none;")
         top_row = QHBoxLayout(top_row_container)
@@ -118,7 +113,6 @@ class Workout(QWidget):
         info_col = QVBoxLayout()
         info_col.setSpacing(2)
 
-        # Give object names so we can override any global QLabel QSS
         self.welcome_label = QLabel("Trainee: Loading...")
         self.welcome_label.setObjectName("welcomeLabel")
         self.welcome_label.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
@@ -131,7 +125,6 @@ class Workout(QWidget):
         self.plan_label.setAutoFillBackground(False)
         self.plan_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
-        # HARD override (beats global QLabel styles)
         top_row_container.setStyleSheet("""
             QWidget { background: transparent; border: none; }
 
@@ -177,14 +170,19 @@ class Workout(QWidget):
         self.logout_btn.clicked.connect(self.logoutSignal.emit)
         top_row.addWidget(self.logout_btn)
 
-        page_layout.addWidget(top_row_container)
+        self.content_layout.addWidget(top_row_container)
 
-        # ---------------- MAIN CONTAINER ----------------
         self.grid_container = QWidget()
+        self.grid_container.setStyleSheet("background: transparent;")
+
         self.grid_layout = QGridLayout(self.grid_container)
-        self.grid_layout.setContentsMargins(50, 20, 50, 40)
-        self.grid_layout.setSpacing(40)
-        page_layout.addWidget(self.grid_container)
+        self.grid_layout.setContentsMargins(30, 20, 30, 30)
+        self.grid_layout.setSpacing(20)
+
+        self.content_layout.addWidget(self.grid_container)
+
+        scroll.setWidget(self.content_wrapper)
+        main_layout.addWidget(scroll)
 
     # ------------------- DATA HANDLING -------------------
     def set_user(self, user_data: dict):
@@ -196,6 +194,7 @@ class Workout(QWidget):
             return
 
         self.trainee = get_trainee_info(self.trainee_id)
+        print("DEBUG get_trainee_info result:", self.trainee)
 
         if not self.trainee:
             self.welcome_label.setText("Trainee: Not found")
@@ -205,11 +204,31 @@ class Workout(QWidget):
             return
 
         self.welcome_label.setText(f"Trainee: {self.trainee.get('name', 'User')}")
-        self.plan_label.setText(f"Plan: {self.trainee.get('fitness_level', 'Custom')}")
+        plan_id = self.trainee.get("plan_id", 1)
+        main_level, _ = plan_level_and_index(plan_id)
+        self.plan_label.setText(f"Plan: {main_level}")
 
         plan_id = self.trainee.get("plan_id")
         self.workouts = get_workout_plan(plan_id) if plan_id else []
         self.refresh_cards()
+
+    def _format_target(self, workout):
+        target_val = workout.get("target")
+        if target_val is None:
+            return "Target: -"
+
+        try:
+            target_val = int(target_val)
+        except Exception:
+            target_val = str(target_val)
+
+        workout_name = str(workout.get("name", "")).strip().lower()
+
+        time_based_workouts = {"plank", "cobra stretch"}
+        if workout_name in time_based_workouts:
+            return f"{target_val} Sec"
+
+        return f"{target_val} Reps"
 
     # ------------------- Workout CARDS -------------------
     def refresh_cards(self):
@@ -220,16 +239,15 @@ class Workout(QWidget):
                 w.setParent(None)
 
         card_layout = QHBoxLayout()
-        card_layout.setSpacing(28)
+        card_layout.setSpacing(20)
 
-        # ---------------- LEFT HALF (secondary) ----------------
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(14, 0, 14, 0)
+        left_layout.setContentsMargins(10, 0, 10, 0)
         left_layout.setSpacing(12)
 
         left.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        left.setMinimumWidth(380)
+        left.setMinimumWidth(260)
 
         left_layout.addStretch(2)
 
@@ -239,7 +257,7 @@ class Workout(QWidget):
         quote_top.setStyleSheet("""
             QLabel {
                 color: rgba(255,255,255,0.90);
-                font-size: 40px;
+                font-size: 28px;
                 font-weight: 200;
                 background: transparent;
                 border: none;
@@ -249,10 +267,11 @@ class Workout(QWidget):
 
         quote_bottom = QLabel("Let’s start 💪")
         quote_bottom.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        quote_bottom.setWordWrap(True)
         quote_bottom.setStyleSheet("""
             QLabel {
                 color: #a3bffa;
-                font-size: 34px;
+                font-size: 24px;
                 font-weight: 200;
                 background: transparent;
                 border: none;
@@ -264,90 +283,141 @@ class Workout(QWidget):
         left_layout.addWidget(quote_bottom)
         left_layout.addStretch(3)
 
-        # ---------------- RIGHT HALF (PRIMARY) ----------------
         right = QFrame()
         right_layout = QVBoxLayout(right)
         right_layout.setSpacing(18)
+        right_layout.setContentsMargins(12, 12, 12, 12)
 
         right.setStyleSheet("""
             QFrame {
                 background: rgba(255, 255, 255, 0.10);
-                border: 1px solid rgba(255, 255, 255, 0.18);
-                border-radius: 24px;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 28px;
             }
         """)
-        right_layout.setContentsMargins(44, 40, 44, 40)
+        right.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        right.setMinimumWidth(350)
+        right.setMinimumHeight(420)
 
-        header = QHBoxLayout()
-        h1 = QLabel("Workout")
-        h2 = QLabel("Repetition / Time")
-
-        for h in (h1, h2):
-            h.setFont(QFont("Segoe UI", 24, QFont.Weight.ExtraBold))
-            h.setStyleSheet("""
-                color: #ffffff;
-                letter-spacing: 0.9px;
+        title = QLabel("Today's Workout Plan")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setWordWrap(True)
+        title.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 28px;
+                font-weight: 800;
                 background: transparent;
                 border: none;
-                padding: 0px;
-            """)
+                padding-top: 8px;
+            }
+        """)
+        right_layout.addWidget(title)
 
-        header.addWidget(h1)
-        header.addStretch(2)
-        header.addWidget(h2)
-        right_layout.addLayout(header)
+        subtitle = QLabel("Complete each exercise in sequence to finish your session.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("""
+            QLabel {
+                color: rgba(255,255,255,0.72);
+                font-size: 14px;
+                background: transparent;
+                border: none;
+                padding-bottom: 6px;
+            }
+        """)
+        right_layout.addWidget(subtitle)
 
-        divider = QFrame()
-        divider.setFixedHeight(1)
-        divider.setStyleSheet("background: rgba(255,255,255,0.32); border: none;")
-        right_layout.addWidget(divider)
+        plan_card = QFrame()
+        plan_card.setStyleSheet("""
+            QFrame {
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.10);
+                border-radius: 22px;
+            }
+        """)
+        plan_layout = QVBoxLayout(plan_card)
+        plan_layout.setContentsMargins(20, 20, 20, 20)
+        plan_layout.setSpacing(12)
 
         if not self.workouts:
-            empty = QLabel("No workouts found for this plan.")
-            empty.setFont(QFont("Segoe UI", 18, QFont.Weight.Medium))
+            empty = QLabel("No workout plan available.")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setStyleSheet("""
-                color: rgba(255,255,255,0.90);
-                background: transparent;
-                border: none;
-                padding: 0px;
+                QLabel {
+                    color: rgba(255,255,255,0.75);
+                    font-size: 16px;
+                    background: transparent;
+                    border: none;
+                    padding: 20px;
+                }
             """)
-            right_layout.addWidget(empty)
+            plan_layout.addWidget(empty)
         else:
-            for workout in self.workouts:
-                wname = workout.get("name", "Workout")
-                unit = "seconds" if wname in ["Plank", "Cobra Stretch"] else "reps"
-                target_val = workout.get("target", 0)
+            for idx, workout in enumerate(self.workouts, start=1):
+                row = QFrame()
+                row.setStyleSheet("""
+                    QFrame {
+                        background: rgba(255,255,255,0.05);
+                        border: 1px solid rgba(255,255,255,0.08);
+                        border-radius: 16px;
+                    }
+                """)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(10, 8, 10, 8)
+                row_layout.setSpacing(8)
+                num = QLabel(str(idx))
+                num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                num.setFixedSize(34, 34)
+                num.setStyleSheet("""
+                    QLabel {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                   stop:0 #667eea, stop:1 #764ba2);
+                        color: white;
+                        font-size: 15px;
+                        font-weight: 800;
+                        border-radius: 17px;
+                        border: none;
+                    }
+                """)
 
-                row = QHBoxLayout()
-                row.setSpacing(22)
-
-                name = QLabel(wname)
-                name.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+                name = QLabel(workout.get("name", "Workout"))
+                name.setWordWrap(True)
+                name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
                 name.setStyleSheet("""
-                    color: #ffffff;
-                    background: transparent;
-                    border: none;
-                    padding: 0px;
+                    QLabel {
+                        color: white;
+                        font-size: 18px;
+                        font-weight: 700;
+                        background: transparent;
+                        border: none;
+                    }
                 """)
 
-                val = QLabel(f"{target_val} {unit}")
-                val.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-                val.setStyleSheet("""
-                    color: #dbeafe;
-                    background: transparent;
-                    border: none;
-                    padding: 0px;
+                target = QLabel(self._format_target(workout))
+                target.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                target.setStyleSheet("""
+                    QLabel {
+                        color: #a3bffa;
+                        font-size: 14px;
+                        font-weight: 600;
+                        background: transparent;
+                        border: none;
+                    }
                 """)
 
-                row.addWidget(name)
-                row.addStretch(3)
-                row.addWidget(val)
-                right_layout.addLayout(row)
+                row_layout.addWidget(num)
+                row_layout.addWidget(name, 1)
+                row_layout.addWidget(target)
 
-        right_layout.addStretch(1)
+                plan_layout.addWidget(row)
+
+        right_layout.addWidget(plan_card)
+        right_layout.addStretch()
 
         start_btn = QPushButton("Start Workout")
-        start_btn.setFixedHeight(66)
+        start_btn.setFixedHeight(58)
+        start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         start_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -366,18 +436,53 @@ class Workout(QWidget):
         start_btn.clicked.connect(self.start_workout_safely)
         right_layout.addWidget(start_btn)
 
-        card_layout.addWidget(left, 1)
-        card_layout.addWidget(right, 4)
+        card_layout.addWidget(left, 2)
+        card_layout.addWidget(right, 3)
 
         container = QWidget()
+        container.setStyleSheet("background: transparent;")
         container.setLayout(card_layout)
         self.grid_layout.addWidget(container, 0, 0)
+
+    def _extract_gender(self):
+        if not self.trainee:
+            return "Male"
+
+        possible_keys = ["gender", "Gender", "sex", "Sex"]
+        raw_gender = None
+
+        for key in possible_keys:
+            if key in self.trainee and self.trainee.get(key):
+                raw_gender = self.trainee.get(key)
+                break
+
+        print("DEBUG trainee data:", self.trainee)
+        print("DEBUG raw gender found:", raw_gender)
+
+        if not raw_gender:
+            return "Male"
+
+        gender_text = str(raw_gender).strip().lower()
+
+        if gender_text in ["female", "f", "woman", "girl"]:
+            return "Female"
+
+        if gender_text in ["male", "m", "man", "boy"]:
+            return "Male"
+
+        return str(raw_gender).strip()
 
     def start_workout_safely(self):
         """Start the first workout in the plan (unlocked)."""
         if not self.workouts:
             QMessageBox.information(self, "No Workouts", "No workout plan found for this user.")
             return
+
+        if not self.trainee_id:
+            QMessageBox.warning(self, "User Error", "Trainee ID not found.")
+            return
+
+        start_new_session(self.trainee_id)
 
         first = self.workouts[0]
         workout_id = first.get("workout_id")
@@ -388,48 +493,36 @@ class Workout(QWidget):
             return
 
         main_win = self.window()
+        user_gender = self._extract_gender()
+
+        print("DEBUG final gender passed to main_window:", user_gender)
+
         if hasattr(main_win, "show_workout_session"):
-            main_win.show_workout_session(workout_id, workout_name)
+            main_win.show_workout_session(workout_id, workout_name, user_gender)
         else:
             QMessageBox.warning(self, "Not Available", "Workout session screen is not connected.")
 
-    # ---------------- SESSION TRACKING ----------------
+    def finalize_session(self):
+        """Show session completed popup when all exercises are done"""
+
+        QMessageBox.information(
+            self,
+            "Session Saved",
+            "Workout session completed and saved successfully!"
+        )
+
+        # Reset for next workout session
+        self.completed_indices.clear()
 
     def mark_exercise_completed(self, index):
         """Call this when an exercise is completed"""
+
+        # Add the completed exercise index
         self.completed_indices.add(index)
 
+        # Check if all workouts are completed
         if len(self.completed_indices) == len(self.workouts):
             self.finalize_session()
-
-
-    def finalize_session(self):
-        """Save workout session to database when all exercises are done"""
-        if self.session_completed:
-            return  # prevent double saving
-
-        session_data = {col: 0 for col in WORKOUT_COLUMNS}
-
-        # mark completed workouts as 1
-        for i, workout in enumerate(self.workouts):
-            if i < len(WORKOUT_COLUMNS) and i in self.completed_indices:
-                session_data[WORKOUT_COLUMNS[i]] = 1
-
-        success, msg = save_workout_session(self.trainee_id, session_data)
-
-        if success:
-            
-            update_last_activity(self.trainee_id)
-            
-            self.session_completed = True
-            QMessageBox.information(self, "Session Saved",
-                                    "Workout session completed and saved successfully!")
-            
-            self.session_completed = False
-            self.completed_indices.clear()
-        else:
-            QMessageBox.critical(self, "Database Error", msg)
-
 
     def on_profile_clicked(self):
         main_win = self.window()

@@ -78,10 +78,8 @@ class MainWindow(QMainWindow):
         self.analytics_screen.logoutRequested.connect(self.on_logout)
 
         # Workout session:
-        # - sessionEnded is used as "Exit to Workout" button in the session UI
         self.workout_session.sessionEnded.connect(self.show_Workout)
-        # - nextWorkoutRequested is emitted when user clicks "Next" in the session UI
-        self.workout_session.nextWorkoutRequested.connect(self.on_workout_finished)
+        self.workout_session.nextWorkoutRequested.connect(self.on_next_workout_requested)
 
         self.profile_screen.backRequested.connect(self.show_Workout)
         self.analytics_screen.backRequested.connect(self.show_Workout)
@@ -93,7 +91,7 @@ class MainWindow(QMainWindow):
     # Auth + user setup
     # =====================================================
     def on_login_success(self, user_data: dict):
-        """After login, show Analytics first (as requested)."""
+        """After login, show Analytics first."""
         self.current_user = user_data
 
         # Update screens that depend on user
@@ -111,26 +109,44 @@ class MainWindow(QMainWindow):
         self.login_screen.clear_inputs()
         self.login_screen.show_login_tab()
         self.stack.setCurrentWidget(self.login_screen)
-        
-        # ✅ Reset camera permission correctly
+
+        # Reset camera permission correctly
         if hasattr(self, "workout_demo"):
             self.workout_demo.camera_permission_granted = False
+
+        if hasattr(self, "workout_session"):
+            self.workout_session.camera_permission_granted = False
+            self.workout_session.camera_active = False
 
     # =====================================================
     # Top-level navigation helpers
     # =====================================================
     def show_Workout(self):
         if self.current_user:
+            # refresh latest user data from DB if available
+            fresh_user = get_trainee_info(self.current_user.get("trainee_id"))
+            if fresh_user:
+                self.current_user = fresh_user
+
             self.Workout.set_user(self.current_user)
+
         self.stack.setCurrentWidget(self.Workout)
 
     def show_profile(self):
         if self.current_user:
+            fresh_user = get_trainee_info(self.current_user.get("trainee_id"))
+            if fresh_user:
+                self.current_user = fresh_user
+
             self.profile_screen.set_user(self.current_user)
             self.stack.setCurrentWidget(self.profile_screen)
 
     def show_analytics(self):
         if self.current_user:
+            fresh_user = get_trainee_info(self.current_user.get("trainee_id"))
+            if fresh_user:
+                self.current_user = fresh_user
+
             self.analytics_screen.set_user(self.current_user)
             self.stack.setCurrentWidget(self.analytics_screen)
 
@@ -152,56 +168,76 @@ class MainWindow(QMainWindow):
     # =====================================================
     # Workout Session navigation
     # =====================================================
-    def show_workout_session(self, workout_id: int, workout_name: str | None = None):
+    def show_workout_session(self, workout_id: int, workout_name: str | None = None, user_gender: str = "Male"):
         """Open WorkoutSession for a given workout."""
         if not workout_name:
             workout_name = getattr(self.workout_demo, "title_label", None)
             workout_name = workout_name.text() if workout_name else "Workout"
 
-        # Try to pass the target (seconds for Plank/Cobra, reps for others) from the current plan
+        # Find this workout in the plan list -> get target + index
         target_val = None
+        index_in_plan = 0
+        workouts = getattr(self.Workout, "workouts", [])
+
         try:
-            workouts = getattr(self.Workout, "workouts", [])
-            for w in workouts:
+            for i, w in enumerate(workouts):
                 if int(w.get("workout_id", -1)) == int(workout_id):
                     target_val = w.get("target")
+                    index_in_plan = i
                     break
         except Exception:
             target_val = None
+            index_in_plan = 0
 
-        self.workout_session.set_workout({"name": workout_name, "target": target_val}, workout_id)
+        # pass current workout details
+        self.workout_session.set_workout(
+            {"workout_id": workout_id, "name": workout_name, "target": target_val},
+            index_in_plan
+        )
+        # ✅ NEW: send user gender to workout session
+        if hasattr(self.workout_session, "set_user_gender"):
+            self.workout_session.set_user_gender(user_gender)
+
         self.stack.setCurrentWidget(self.workout_session)
 
-    def on_workout_finished(self, workout_id: int):
-        """Called when user clicks 'Next' in workout session."""
-        # Convert id -> index for Workout tracking, if possible
-        try:
-            index = int(workout_id) - 1
-        except Exception:
-            index = -1
-
-        if index >= 0 and hasattr(self.Workout, "mark_exercise_completed"):
-            self.Workout.mark_exercise_completed(index)
-
+    def on_next_workout_requested(self, current_index: int):
+        """
+        This signal carries the current exercise index (0..5),
+        so we go to next_index directly.
+        """
         workouts = getattr(self.Workout, "workouts", [])
-        next_index = index + 1
-
-        # If workout_id is not a proper 1-based id, just return to Workout
-        if index < 0 or not workouts:
+        if not workouts:
             self.show_Workout()
             return
 
-        if next_index < len(workouts):
-            next_workout = workouts[next_index]
-            next_id = next_workout.get("workout_id")
-            next_name = next_workout.get("name", "Workout")
-            if next_id is not None:
-                self.show_workout_session(next_id, next_name)
-            else:
-                self.show_Workout()
-        else:
-            # ✅ After all workouts completed -> Analytics (as requested)
+        # mark current exercise as completed
+        if hasattr(self.Workout, "mark_exercise_completed"):
+            self.Workout.mark_exercise_completed(current_index)
+
+        next_index = current_index + 1
+
+        # if finished all workouts
+        if next_index >= len(workouts):
             self.show_analytics()
+            return
+
+        next_workout = workouts[next_index]
+        next_id = next_workout.get("workout_id")
+        next_name = next_workout.get("name", "Workout")
+
+        # ✅ NEW: keep same gender for next workout too
+        user_gender = "Male"
+        try:
+            trainee = getattr(self.Workout, "trainee", None)
+            if trainee:
+                user_gender = trainee.get("gender", "Male")
+        except Exception:
+            pass
+
+        if next_id is not None:
+            self.show_workout_session(next_id, next_name, user_gender)
+        else:
+            self.show_Workout()
 
     # =====================================================
     # Signup -> Fitness form -> Analytics
@@ -219,10 +255,8 @@ class MainWindow(QMainWindow):
         email = self.signup_data.get("email")
         otp, created_at = generate_otp()
 
-        # Send OTP (SMTP with Fallback)
         send_otp(email, otp, parent=self, purpose="Email Verification")
 
-        # Resend callback for dialog
         def _resend():
             nonlocal otp, created_at
             otp, created_at = generate_otp()
@@ -241,12 +275,11 @@ class MainWindow(QMainWindow):
 
         from backend.utils.email_service import verify_otp
         verified, v_msg = verify_otp(otp_input, otp, created_at, expiry_mins=5)
-        
+
         if not verified:
             QMessageBox.critical(self, "Verification Failed", v_msg)
             return
 
-        # Create account with fitness info
         success, message, trainee_id = register_user(
             self.signup_data.get("name"),
             email,
@@ -258,15 +291,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Registration Failed", message)
             return
 
-        # After successful signup, navigate to login so the user can sign in
-        QMessageBox.information(self, "Registration Successful", "Account created successfully. Please login.")
+        QMessageBox.information(
+            self,
+            "Registration Successful",
+            "Account created successfully. Please login."
+        )
 
-        # Clear temporary signup state and show login screen
         self.signup_data = {}
         self.fitness_data_cache = {}
         self.current_user = None
 
-        # Ensure login tab is displayed and inputs are cleared
         self.login_screen.clear_inputs()
         self.login_screen.show_login_tab()
         self.stack.setCurrentWidget(self.login_screen)

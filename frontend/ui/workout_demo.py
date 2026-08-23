@@ -493,9 +493,11 @@ class WorkoutDemo(QWidget):
     # ==================================================
     def load_workout(self, workout_id):
         self.current_workout_id = workout_id
+        print("DEBUG workout_id received in WorkoutDemo:", workout_id)
 
         try:
             row = data_manager.get_workout_by_id(workout_id)
+            print("DEBUG database row:", row)
         except Exception as e:
             self.show_dialog("Database Error", str(e), QMessageBox.Icon.Critical)
             return
@@ -504,8 +506,7 @@ class WorkoutDemo(QWidget):
             self.show_dialog("Not Found", "Workout not found", QMessageBox.Icon.Warning)
             return
 
-        # expected: (name, muscles?, description)
-        workout_name, _, description = row
+        workout_name, description = row
 
         self.title_label.setText(workout_name)
         self.muscles_label.setText(workout_name)
@@ -704,8 +705,16 @@ class WorkoutDemo(QWidget):
 
     def open_camera_screen(self):
         main_win = self.window()
+
+        gender = "Male"
+        try:
+            if hasattr(main_win, "Workout") and main_win.Workout.trainee:
+                gender = main_win.Workout.trainee.get("gender", "Male")
+        except:
+            pass
+
         if hasattr(main_win, "show_workout_session"):
-            main_win.show_workout_session(self.current_workout_id)
+            main_win.show_workout_session(self.current_workout_id, None, gender)
 
     def go_back(self):
         self._pause_preview()

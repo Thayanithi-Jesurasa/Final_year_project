@@ -134,12 +134,17 @@ class ChartJsView(QWebEngineView):
                   }};
                 }}
 
-                // x-axis ticks callback -> shows "20%"
+                // x-axis ticks callback -> shows real category labels only for category axes
                 if (cfg && cfg.options && cfg.options.scales && cfg.options.scales.x &&
+                    cfg.options.scales.x.type === "category" &&
                     cfg.options.scales.x.ticks) {{
-                  cfg.options.scales.x.ticks.callback = (value) => value;
+                cfg.options.scales.x.ticks.callback = function(value, index) {{
+                    if (cfg.data && cfg.data.labels && cfg.data.labels[index] !== undefined) {{
+                    return cfg.data.labels[index];
+                    }}
+                    return value;
+                }};
                 }}
-
                 const ctx = document.getElementById("c").getContext("2d");
                 if (chart) chart.destroy();
                 chart = new Chart(ctx, cfg);
@@ -677,7 +682,7 @@ class AnalyticsScreen(QWidget):
                 total += val["reps"] * 2
             elif "duration" in val:
                 total += val["duration"] * 2
-        total *= 4
+        total *= 40
         return total
 
     def calculate_total_points(self):
@@ -824,7 +829,7 @@ class AnalyticsScreen(QWidget):
         self.time_table.setRowCount(len(time_totals))
         for row, (name, duration) in enumerate(time_totals.items()):
             self.time_table.setItem(row, 0, self._create_item(name, Qt.AlignmentFlag.AlignLeft))
-            self.time_table.setItem(row, 1, self._create_item(f"{duration} sec"))
+            self.time_table.setItem(row, 1, self._create_item(f"{duration:.2f} sec"))
 
         promoted, total_points, rates = self.check_promotion_status()
 
@@ -925,8 +930,11 @@ class AnalyticsScreen(QWidget):
         if session_analytics.total_sessions == 0:
             total_points = 0
 
+        display_total_points = max(round(total_points), 0)
+        display_plan_max_points = round(self.plan_max_points)
+
         self.total_score_card.findChild(QLabel, "value").setText(
-            f"{total_points}/{self.plan_max_points}"
+            f"{display_total_points}/{display_plan_max_points}"
         )
 
         trainee = get_trainee_info(self.trainee_id)
@@ -936,7 +944,8 @@ class AnalyticsScreen(QWidget):
             self.remaining_score_card.findChild(QLabel, "value").setText("MAX LEVEL")
         else:
             remaining = max(self.plan_max_points - total_points, 0)
-            self.remaining_score_card.findChild(QLabel, "value").setText(str(remaining))
+            display_remaining = round(remaining)
+            self.remaining_score_card.findChild(QLabel, "value").setText(str(display_remaining))
 
     # ============================================================
     # ✅ CHARTS (Matplotlib removed) -> Offline Chart.js
@@ -1021,6 +1030,7 @@ class AnalyticsScreen(QWidget):
                         "scales": {
                             "y": {"beginAtZero": True, "suggestedMax": target},
                             "x": {
+                                "type": "category",
                                 "title": {"display": True, "text": "Session", "padding": 12},
                                 "ticks": {"padding": 8}
                             }
@@ -1071,6 +1081,7 @@ class AnalyticsScreen(QWidget):
                         "scales": {
                             "y": {"beginAtZero": True, "suggestedMax": target},
                             "x": {
+                                "type": "category",
                                 "title": {"display": True, "text": "Session", "padding": 12},
                                 "ticks": {"padding": 8}
                             }

@@ -241,7 +241,7 @@ def get_trainee_info(trainee_id):
     try:
         cursor = connection.cursor()
         cursor.execute("""
-            SELECT trainee_id, name, plan_id, fitness_level
+            SELECT trainee_id, name, gender, plan_id, fitness_level
             FROM trainee
             WHERE trainee_id = ?
         """, (trainee_id,))
